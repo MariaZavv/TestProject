@@ -1,0 +1,113 @@
+plugins {
+    id 'java'
+}
+
+group = 'ru.protei'
+version = '1.0-SNAPSHOT'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+dependencies {
+    testImplementation 'org.testng:testng:7.10.0'
+    testImplementation 'com.codeborne:selenide:7.11.0'
+    testImplementation 'io.qameta.allure:allure-testng:2.24.0'
+    testImplementation 'io.qameta.allure:allure-selenide:2.24.0'
+    testImplementation 'ch.qos.logback:logback-classic:1.5.6'
+}
+
+import com.sun.net.httpserver.HttpServer
+import java.net.InetSocketAddress
+import java.nio.file.Files
+
+def server
+
+def allureResultsDir = layout.buildDirectory.dir('allure-results')
+def selenideReportsDir = layout.buildDirectory.dir('selenide-reports')
+
+/* -------------------- SERVER START -------------------- */
+
+tasks.register("startTestServer") {
+    doLast {
+        def port = 8080
+        def root = file("src/test/resources").toPath()
+
+        server = HttpServer.create(new InetSocketAddress(port), 0)
+
+        server.createContext("/") { exchange ->
+            def path = exchange.requestURI.path
+
+            if (path == "/") {
+                path = "/qa-test.html"
+            }
+
+            def file = root.resolve("." + path).normalize()
+
+            if (!Files.exists(file)) {
+                exchange.sendResponseHeaders(404, 0)
+                exchange.responseBody.close()
+                return
+            }
+
+            def bytes = Files.readAllBytes(file)
+
+            exchange.sendResponseHeaders(200, bytes.length)
+            exchange.responseBody.write(bytes)
+            exchange.responseBody.close()
+        }
+
+        server.start()
+        println "Test server started at http://localhost:$port"
+    }
+}
+
+/* -------------------- SERVER STOP -------------------- */
+
+tasks.register("stopTestServer") {
+    doLast {
+        if (server != null) {
+            server.stop(0)
+            server = null
+        }
+    }
+}
+
+/* -------------------- TEST CONFIG -------------------- */
+
+test {
+    useTestNG()
+
+    dependsOn startTestServer
+    finalizedBy stopTestServer
+
+    outputs.upToDateWhen { false }
+
+    systemProperty 'allure.results.directory', allureResultsDir.get().asFile.absolutePath
+    systemProperty 'selenide.reportsFolder', selenideReportsDir.get().asFile.absolutePath
+    systemProperty 'java.util.logging.config.file', file('src/test/resources/jul.properties').absolutePath
+
+    doFirst {
+        delete allureResultsDir.get().asFile
+        delete selenideReportsDir.get().asFile
+    }
+
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        showStandardStreams = true
+        exceptionFormat = 'full'
+    }
+
+    afterSuite { desc, result ->
+        if (!desc.parent) {
+            logger.lifecycle("""
+                Test summary:
+                total=${result.testCount},
+                passed=${result.successfulTestCount},
+                failed=${result.failedTestCount},
+                skipped=${result.skippedTestCount}
+            """.stripIndent())
+        }
+    }
+}
